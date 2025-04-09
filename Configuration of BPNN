@@ -1,0 +1,92 @@
+library(tensorflow)
+library(keras)
+library(dplyr)
+library(readr)
+library(fastDummies)
+metric_coeff_determination = custom_metric("coeff_determination", 
+                                           function(y_true, y_pred) 
+                                           {
+                                             SS_res =  k_sum(k_square( y_true - y_pred ))
+                                             SS_tot = k_sum(k_square( y_true - k_mean(y_true) ) )
+                                             return ( 1 - SS_res/(SS_tot + k_epsilon()) )
+                                           }
+)
+df <- read.csv('./data/emissions_pollutant_co2.csv', header = TRUE)
+
+# Define input and target columns, explicitly removing Id, lat, lon
+input_cols <- c("year", "scenario", "region", "industry_CO2", "power_CO2", "residential_CO2", "transportation_CO2")
+target_cols <- c("agriculture_NH3", "industry_NH3","industry_NOX" ,"industry_PM10","industry_PM25","industry_SO2",
+                 "industry_VOC" ,"power_NOX" ,"power_PM10", "power_PM25","power_SO2","power_VOC", "residential_NH3", 
+                 "residential_NOX","residential_PM10", "residential_PM25","residential_SO2","residential_VOC" ,"transportation_NH3", 
+ "transportation_NOX" ,"transportation_PM10" ,"transportation_PM25" ,"transportation_SO2" , "transportation_VOC" ) 
+
+df <- df %>% select(-c(Id, lat, lon,power_NH3))
+
+
+
+# One-hot encode categorical variables
+df <- df %>%
+  mutate(across(c(year, scenario, region), as.factor)) %>%
+  fastDummies::dummy_cols(select_columns = c("year", "scenario", "region"), remove_selected_columns = TRUE)
+
+# Identify continuous variables
+continuous_vars <- setdiff(names(df), c(grep("year_|scenario_|region_", names(df)), value = TRUE))
+# Check for constant columns
+constant_cols <- continuous_vars[sapply(df[continuous_vars], function(x) sd(x) == 0)]
+if (length(constant_cols) > 0) {
+  stop(paste("Constant columns detected:", paste(constant_cols, collapse = ", "), ". Remove or adjust these columns before proceeding."))
+}
+
+# Normalize continuous variables
+df <- df %>%
+  mutate(across(all_of(continuous_vars), scale))
+
+# Ensure all columns are numeric
+df <- df %>%
+  mutate(across(everything(), as.numeric))
+
+# Update input columns after one-hot encoding
+input_cols <- setdiff(names(df), target_cols)
+
+# Split data into features and targets
+X <- df %>% select(all_of(input_cols)) %>% as.matrix()
+y <- df %>% select(all_of(target_cols)) %>% as.matrix()
+
+# Split data into training and testing sets
+set.seed(42)
+train_indices <- sample(1:nrow(X), size = 0.7 * nrow(X))
+X_train <- X[train_indices, ]
+X_test <- X[-train_indices, ]
+y_train <- y[train_indices, ]
+y_test <- y[-train_indices, ]
+decay = function(epoch, lr) {
+  if (epoch < 50) 1e-3
+  else if (epoch >= 50 && epoch < 100) 1e-4
+  else 1e-5
+}
+
+model <- keras_model_sequential() %>%
+  layer_dense(units = 256, activation = 'relu', input_shape = ncol(X_train)) %>%
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dense(units = 64, activation = 'relu') %>%
+  layer_dense(units = ncol(y_train), activation = 'linear')
+
+# Compile the model
+model %>% compile(
+  optimizer = 'adam',
+  loss = 'mean_absolute_error',
+  metrics = list(metric_coeff_determination)
+)
+
+# Train the model with early stopping
+history <- model %>% fit(
+  X_train, y_train,
+  epochs = 200,
+  batch_size = 128,
+  validation_split = 0.3,
+  verbose = 2,
+  callbacks = list(callback_early_stopping(monitor = "val_loss", patience = 20),
+                   callback_learning_rate_scheduler(decay))
+)
+score <- model %>% evaluate(X_test, y_test)
+print(score)
