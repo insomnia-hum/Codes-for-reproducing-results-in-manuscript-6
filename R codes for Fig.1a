@@ -1,0 +1,33 @@
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(readxl)
+library(MetBrewer)
+library(tidyr)
+co2emissions = read.csv('./data/CO2_Emissions_by_Scenario_and_Sector.csv',header=TRUE)
+co2emissions2 = co2emissions%>%gather(key = 'year',value = 'emissions',4:12)
+co2emissions2$year = substr(co2emissions2$year,2,5)%>%as.numeric()
+co2emissions2$emissions = co2emissions2$emissions*3.66667/1000
+co2emissions2 = co2emissions2 %>% group_by(scenario,sector,year)%>%summarise(emissions = sum(emissions)) %>% 
+  filter(scenario%in%c('Highcost_DAC','Lowcost_DAC'))
+netdata = co2emissions2%>%group_by(scenario,year)%>%summarise(net = sum(emissions)) %>% 
+  filter(scenario%in%c('Highcost_DAC','Lowcost_DAC'))
+
+ggplot()+geom_bar(data = co2emissions2,stat = 'identity',
+                  aes(x=year,y=emissions,
+                      fill=factor(sector,levels = c('Electricity generation','Industry','Residential','Agricultural',
+                                                    'Transportation','Others','Biomass (offsetting)',
+                                                    'BECCS','DACCS'))),alpha = .9)+
+  scale_fill_manual(values = c('#D9D9D9','#BFBFBF','#A6A6A6','blue','#7F7F7F',"grey1","#74c8c3","green4",'orange2'))+theme_bw()+labs(x='',y='Emissions (GtCO2)',fill='')+
+  geom_hline(yintercept = 0)+theme(strip.text = element_text(size=12,face = 'bold'),legend.position = 'right',
+                                   axis.title = element_text(size=12,face = 'bold'))+
+  geom_line(data = netdata,aes(x=year,y=net),color='red2')+ggh4x::facet_wrap2(
+    ~scenario,ncol = 2,
+    strip = ggh4x::strip_themed(
+      background_x = ggh4x::elem_list_rect(
+        fill = c("#04a3bd", "#f0be3d")
+      )
+    )
+  ) 
+
+
